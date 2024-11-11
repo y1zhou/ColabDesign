@@ -1,11 +1,10 @@
 import jax
 import jax.numpy as jnp
-import numpy as np
 
-from colabdesign.shared.utils import copy_dict
-from colabdesign.shared.model import soft_seq
 from colabdesign.af.alphafold.common import residue_constants
-from colabdesign.af.alphafold.model import model, config
+from colabdesign.af.alphafold.model import model
+from colabdesign.shared.model import soft_seq
+
 
 ############################################################################
 # AF_INPUTS - functions for modifying inputs before passing to alphafold
@@ -19,14 +18,14 @@ class _af_inputs:
                    shuffle_first=self._args["shuffle_first"])
     seq = self._fix_pos(seq)
     aux.update({"seq":seq, "seq_pseudo":seq["pseudo"]})
-    
+
     # protocol specific modifications to seq features
-    if self.protocol == "binder":
+    if self.protocol in {"binder", "nanobody"}:
       # concatenate target and binder sequence
       seq_target = jax.nn.one_hot(inputs["batch"]["aatype"][:self._target_len],self._args["alphabet_size"])
       seq_target = jnp.broadcast_to(seq_target,(self._num, *seq_target.shape))
       seq = jax.tree_map(lambda x:jnp.concatenate([seq_target,x],1), seq)
-      
+
     if self.protocol in ["fixbb","hallucination","partial"] and self._args["copies"] > 1:
       seq = jax.tree_map(lambda x:expand_copies(x, self._args["copies"], self._args["block_diag"]), seq)
 
@@ -47,19 +46,19 @@ class _af_inputs:
     return seq
 
   def _update_template(self, inputs, key):
-    ''''dynamically update template features''' 
+    ''''dynamically update template features'''
     if "batch" in inputs:
       batch, opt = inputs["batch"], inputs["opt"]
 
       # enable templates
       inputs["template_mask"] = inputs["template_mask"].at[0].set(1)
       L = batch["aatype"].shape[0]
-      
+
       # decide which position to remove sequence and/or sidechains
       rm     = jnp.broadcast_to(inputs.get("rm_template",False),L)
       rm_seq = jnp.where(rm,True,jnp.broadcast_to(inputs.get("rm_template_seq",True),L))
       rm_sc  = jnp.where(rm_seq,True,jnp.broadcast_to(inputs.get("rm_template_sc",True),L))
-                          
+
       # define template features
       template_feats = {"template_aatype":jnp.where(rm_seq,21,batch["aatype"])}
 
@@ -68,7 +67,7 @@ class _af_inputs:
         template_feats.update({"template_dgram":batch["dgram"]})
         nT,nL = inputs["template_aatype"].shape
         inputs["template_dgram"] = jnp.zeros((nT,nL,nL,39))
-        
+
       if "all_atom_positions" in batch:
         # get pseudo-carbon-beta coordinates (carbon-alpha for glycine)
         # aatype = is used to define template's CB coordinates (CA in case of glycine)
@@ -96,7 +95,7 @@ class _af_inputs:
             inputs[k] = inputs[k].at[0,pos].set(v)
         else:
           inputs[k] = inputs[k].at[0].set(v)
-        
+
         # remove sidechains (mask anything beyond CB)
         if k in ["template_all_atom_mask"]:
           if self.protocol == "partial":
@@ -108,8 +107,8 @@ class _af_inputs:
 
 def update_seq(seq, inputs, seq_1hot=None, seq_pssm=None, mlm=None):
   '''update the sequence features'''
-  
-  if seq_1hot is None: seq_1hot = seq 
+
+  if seq_1hot is None: seq_1hot = seq
   if seq_pssm is None: seq_pssm = seq
   target_feat = seq_1hot[0,:,:20]
 
@@ -118,11 +117,11 @@ def update_seq(seq, inputs, seq_1hot=None, seq_pssm=None, mlm=None):
   msa_feat = jnp.zeros_like(inputs["msa_feat"]).at[...,0:22].set(seq_1hot).at[...,25:47].set(seq_pssm)
 
   # masked language modeling (randomly mask positions)
-  if mlm is not None:    
+  if mlm is not None:
     X = jax.nn.one_hot(22,23)
     X = jnp.zeros(msa_feat.shape[-1]).at[...,:23].set(X).at[...,25:48].set(X)
     msa_feat = jnp.where(mlm[...,None],X,msa_feat)
-    
+
   inputs.update({"msa_feat":msa_feat, "target_feat":target_feat})
 
 def update_aatype(aatype, inputs):
@@ -148,7 +147,7 @@ def expand_copies(x, copies, block_diag=True):
     y = x.reshape((-1,1,copies,sub_L,22))
     block_diag_mask = jnp.expand_dims(jnp.eye(copies),(0,3,4))
     seq = block_diag_mask * y
-    gap_seq = (1-block_diag_mask) * jax.nn.one_hot(jnp.repeat(21,sub_L),22)  
+    gap_seq = (1-block_diag_mask) * jax.nn.one_hot(jnp.repeat(21,sub_L),22)
     y = (seq + gap_seq).swapaxes(0,1).reshape(-1,L,22)
     return jnp.concatenate([x[:1],y],0)
   else:

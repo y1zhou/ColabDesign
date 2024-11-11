@@ -531,6 +531,10 @@ class _af_prep:
             self._binder_len = binder_len
             res_idx = np.append(res_idx, res_idx[-1] + np.arange(binder_len) + 50)
 
+        # TODO: @y1zhou make this configurable
+        if self._binder_len < 115:
+            raise ValueError("Nanobody binder must be at least 115 residues long")
+
         self._len = self._binder_len
         self._lengths = [self._target_len, self._binder_len]
 
@@ -563,6 +567,38 @@ class _af_prep:
 
         # configure input features
         self._inputs = self._prep_features(num_res=sum(self._lengths), num_seq=1)
+
+        # TODO: @y1zhou sample other alpaca germlines
+        # https://www.biorxiv.org/content/10.1101/2024.03.14.585103v1
+        # Sequence source: 10.1074/jbc.M806889200
+        nbbcii10_3eak = "QVQLVESGGGLVQPGGSLRLSCAASGGSEYSYSTFSLGWFRQAPGQGLEAVAAIASMGGLTYYADSVKGRFTISRDNSKNTLYLQMNSLRAEDTAVYYCAAVRGYFMRLPSSHNFRYWGQGTLVTVSS"
+        v_gene, j_gene = nbbcii10_3eak[:100], nbbcii10_3eak[-12:]
+
+        init_binder_aatype = np.concatenate(
+            (
+                # V gene tokens
+                np.array(
+                    [
+                        resname_to_idx[residue_constants.restype_1to3[resname]]
+                        for resname in v_gene
+                    ]
+                ),
+                # Filler for the HCDR3
+                np.zeros(self._binder_len - len(v_gene) - len(j_gene), dtype=int),
+                # J gene tokens
+                np.array(
+                    [
+                        resname_to_idx[residue_constants.restype_1to3[resname]]
+                        for resname in j_gene
+                    ]
+                ),
+            ),
+            axis=0,
+        )
+        self._pdb["batch"]["aatype"] = np.concatenate(
+            (self._pdb["batch"]["aatype"][: self._target_len], init_binder_aatype),
+            axis=0,
+        )
 
         self._inputs["residue_index"] = res_idx
         self._inputs["batch"] = self._pdb["batch"]
